@@ -3,187 +3,251 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>林業ARプロット - 円形調査</title>
+    <title>林業プロット測定儀</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #000; font-family: sans-serif; }
-        /* UIオーバーレイ */
-        #overlay {
-            position: absolute; top: 10px; left: 10px; right: 10px;
-            color: white; background: rgba(0, 0, 0, 0.5); padding: 10px;
-            border-radius: 8px; pointer-events: auto; z-index: 100;
-            display: none; /* AR開始まで隠す */
+        body { margin: 0; background: #000; color: white; font-family: sans-serif; overflow: hidden; }
+        /* カメラ映像 */
+        video { position: fixed; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; z-index: -1; }
+        
+        /* UIレイヤー */
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        
+        /* 十字線（レチクル） */
+        #crosshair {
+            position: absolute; top: 50%; left: 50%;
+            width: 40px; height: 40px;
+            transform: translate(-50%, -50%);
+            border: 2px solid rgba(255, 255, 255, 0.8);
+            border-radius: 50%;
         }
-        label { display: block; margin-bottom: 5px; font-weight: bold; }
-        input[type=range] { width: 100%; }
-        #status { font-size: 0.9em; margin-top: 5px; color: #aaa; }
+        #crosshair::after {
+            content: ''; position: absolute; top: 50%; left: 50%;
+            width: 4px; height: 4px; background: red;
+            transform: translate(-50%, -50%); border-radius: 50%;
+        }
+
+        /* 判定結果表示 */
+        #judgement {
+            position: absolute; top: 35%; left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 3rem; font-weight: bold;
+            text-shadow: 2px 2px 4px #000;
+            display: none;
+        }
+        .status-in { color: #00ff00; }
+        .status-out { color: #ff0000; }
+
+        /* コントロールパネル（下部） */
+        #controls {
+            position: absolute; bottom: 0; left: 0; right: 0;
+            background: rgba(0,0,0,0.8); padding: 15px;
+            pointer-events: auto;
+            border-top-left-radius: 15px; border-top-right-radius: 15px;
+        }
+        .row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        input[type="number"] { width: 60px; padding: 5px; font-size: 16px; border-radius: 4px; border: none; }
+        button { padding: 10px 20px; font-size: 14px; border-radius: 5px; border: none; cursor: pointer; }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-set { background: #ffa500; color: black; font-weight: bold; }
+        
+        /* カウンター */
+        #counter-box {
+            position: absolute; top: 10px; right: 10px;
+            background: rgba(0,0,0,0.6); padding: 10px; border-radius: 8px;
+            text-align: center; pointer-events: auto;
+        }
+        #count-val { font-size: 24px; font-weight: bold; color: yellow; }
+        #btn-count { background: #28a745; color: white; width: 100%; margin-top: 5px; padding: 8px; font-weight: bold;}
+        
+        /* 情報表示 */
+        #info-box {
+            position: absolute; top: 10px; left: 10px;
+            font-size: 12px; line-height: 1.4; opacity: 0.8;
+        }
     </style>
 </head>
 <body>
 
-<div id="overlay">
-    <label>半径: <span id="radiusVal">5.6</span> m</label>
-    <input type="range" id="radiusInput" min="1.0" max="10.0" step="0.1" value="5.6">
-    <div id="status">地面を認識中...タップして円を配置</div>
-</div>
+    <video id="video" autoplay playsinline muted></video>
 
-<script type="module">
-    import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
-    import { ARButton } from 'https://unpkg.com/three@0.160.0/examples/jsm/webxr/ARButton.js';
+    <div id="ui-layer">
+        <div id="crosshair"></div>
+        <div id="judgement">STANDBY</div>
+    </div>
 
-    let container;
-    let camera, scene, renderer;
-    let controller;
-    let reticle; // 地面認識用のマーカー
-    let currentRing = null; // 現在表示中の円
-    let hitTestSource = null;
-    let hitTestSourceRequested = false;
+    <div id="info-box">
+        俯角: <span id="debug-pitch">0</span>°<br>
+        方位: <span id="debug-heading">0</span>°<br>
+        補正後半径: <span id="debug-radius">--</span>m
+    </div>
 
-    let plotRadius = 5.6; // デフォルト半径
+    <div id="counter-box">
+        <div>本数</div>
+        <div id="count-val">0</div>
+        <button id="btn-count" onclick="incrementCount()">＋</button>
+        <button onclick="resetCount()" style="font-size:10px; background:#666; color:white; margin-top:5px; width:100%;">クリア</button>
+    </div>
 
-    init();
-    animate();
+    <div id="controls">
+        <div class="row">
+            <label>1. 目の高さ(cm)</label>
+            <input type="number" id="eyeHeight" value="160">
+        </div>
+        <div class="row">
+            <label>2. 山の傾斜(度)</label>
+            <input type="number" id="slopeAngle" value="0">
+        </div>
+        <div class="row">
+            <label>3. 山の方向セット</label>
+            <button class="btn-set" id="btn-set-slope" onclick="setSlopeDirection()">現在の方位を山側にする</button>
+        </div>
+        <div style="font-size: 10px; color: #ccc; text-align: center; margin-top: 5px;">
+            ※半径は5.6m固定設定
+        </div>
+        <button class="btn-primary" style="width:100%; margin-top:10px;" onclick="requestPermissions()">センサー開始 (iOS必須)</button>
+    </div>
 
-    function init() {
-        container = document.createElement('div');
-        document.body.appendChild(container);
+<script>
+    // 設定値
+    const PLOT_RADIUS = 5.6; // 半径 (m)
+    
+    // 変数
+    let eyeHeight = 1.6; // m
+    let slopeAngleDeg = 0; // 度
+    let slopeAzimuth = null; // 山側の方位（0-360）
+    let currentAlpha = 0; // 現在の方位
+    let currentBeta = 90; // 現在のピッチ（90が直立）
+    let count = 0;
 
-        scene = new THREE.Scene();
-
-        // カメラ設定
-        camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
-
-        // 照明（リングを見やすくするため）
-        const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
-        scene.add(light);
-
-        // レンダラー設定
-        renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-        renderer.setPixelRatio(window.devicePixelRatio);
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.xr.enabled = true; // WebXR有効化
-        container.appendChild(renderer.domElement);
-
-        // AR開始ボタンの追加
-        const arButton = ARButton.createButton(renderer, { requiredFeatures: ['hit-test'], optionalFeatures: ['dom-overlay'], domOverlay: { root: document.body } });
-        document.body.appendChild(arButton);
-
-        // ARセッション開始時のUI表示制御
-        arButton.addEventListener('click', () => {
-            setTimeout(() => { document.getElementById('overlay').style.display = 'block'; }, 1000);
-        });
-
-        // コントローラー（タップ操作）
-        controller = renderer.xr.getController(0);
-        controller.addEventListener('select', onSelect);
-        scene.add(controller);
-
-        // レチクル（照準）の作成
-        reticle = new THREE.Mesh(
-            new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2),
-            new THREE.MeshBasicMaterial()
-        );
-        reticle.matrixAutoUpdate = false;
-        reticle.visible = false;
-        scene.add(reticle);
-
-        // スライダーのイベント
-        document.getElementById('radiusInput').addEventListener('input', (e) => {
-            plotRadius = parseFloat(e.target.value);
-            document.getElementById('radiusVal').textContent = plotRadius.toFixed(1);
-            
-            // 既に円があればサイズ更新
-            if (currentRing) {
-                updateRingGeometry(currentRing, plotRadius);
-            }
-        });
-
-        window.addEventListener('resize', onWindowResize);
-    }
-
-    // タップ時の処理：リングを配置
-    function onSelect() {
-        if (reticle.visible) {
-            if (currentRing) {
-                scene.remove(currentRing); // 古い円を消す
-            }
-            createPlotRing(reticle.matrix);
+    // カメラ起動
+    async function startCamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+            document.getElementById('video').srcObject = stream;
+        } catch (err) {
+            alert("カメラの起動に失敗しました: " + err);
         }
     }
 
-    // リングを作成する関数
-    function createPlotRing(matrix) {
-        // リングのジオメトリ（内径, 外径, 分割数）
-        // 線の太さを出すために内径と外径に差をつける
-        const thickness = 0.05; // 5cm幅のライン
-        const geometry = new THREE.RingGeometry(plotRadius - thickness, plotRadius, 64);
-        geometry.rotateX(-Math.PI / 2); // 床に寝かせる
+    // センサー許可リクエスト (iOS 13+対応)
+    function requestPermissions() {
+        if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+            DeviceOrientationEvent.requestPermission()
+                .then(permissionState => {
+                    if (permissionState === 'granted') {
+                        window.addEventListener('deviceorientation', handleOrientation);
+                        document.getElementById('controls').style.display = 'none'; // 設定後は隠す（任意）
+                    } else {
+                        alert("センサー権限が必要です");
+                    }
+                })
+                .catch(console.error);
+        } else {
+            // Android他
+            window.addEventListener('deviceorientation', handleOrientation);
+        }
+        startCamera();
+        updateSettings();
+    }
 
-        const material = new THREE.MeshBasicMaterial({ 
-            color: 0x00ff00, // 緑色
-            side: THREE.DoubleSide,
-            transparent: true,
-            opacity: 0.8 
-        });
+    // 設定更新
+    function updateSettings() {
+        eyeHeight = parseFloat(document.getElementById('eyeHeight').value) / 100; // cm -> m
+        slopeAngleDeg = parseFloat(document.getElementById('slopeAngle').value);
+    }
 
-        currentRing = new THREE.Mesh(geometry, material);
+    // 山側の方位をセット
+    function setSlopeDirection() {
+        if(currentAlpha !== null) {
+            slopeAzimuth = currentAlpha;
+            alert(`山側の方位を ${Math.round(slopeAzimuth)}° に設定しました。\n以後、この方向を「上り」、反対を「下り」として補正します。`);
+            updateSettings();
+        }
+    }
+
+    // センサー処理ループ
+    function handleOrientation(event) {
+        // iOSとAndroidでalphaの扱いが違うが、今回は「セットした瞬間からの相対差」を使うため
+        // 絶対方位（北）が合っているかは無視できるロジックにする
         
-        // レチクルの位置・回転をコピー
-        currentRing.position.setFromMatrixPosition(matrix);
-        currentRing.quaternion.setFromRotationMatrix(matrix);
-
-        scene.add(currentRing);
-        document.getElementById('status').textContent = `半径${plotRadius}mの円を配置しました`;
-    }
-
-    // 半径変更時の更新
-    function updateRingGeometry(mesh, radius) {
-        const thickness = 0.05;
-        mesh.geometry.dispose(); // メモリ開放
-        mesh.geometry = new THREE.RingGeometry(radius - thickness, radius, 64);
-        mesh.geometry.rotateX(-Math.PI / 2);
-    }
-
-    function onWindowResize() {
-        camera.aspect = window.innerWidth / window.innerHeight;
-        camera.updateProjectionMatrix();
-        renderer.setSize(window.innerWidth, window.innerHeight);
-    }
-
-    function animate() {
-        renderer.setAnimationLoop(render);
-    }
-
-    function render(timestamp, frame) {
-        if (frame) {
-            const referenceSpace = renderer.xr.getReferenceSpace();
-            const session = renderer.xr.getSession();
-
-            if (hitTestSourceRequested === false) {
-                session.requestReferenceSpace('viewer').then(function (referenceSpace) {
-                    session.requestHitTestSource({ space: referenceSpace }).then(function (source) {
-                        hitTestSource = source;
-                    });
-                });
-                session.addEventListener('end', function () {
-                    hitTestSourceRequested = false;
-                    hitTestSource = null;
-                });
-                hitTestSourceRequested = true;
-            }
-
-            if (hitTestSource) {
-                const hitTestResults = frame.getHitTestResults(hitTestSource);
-
-                if (hitTestResults.length > 0) {
-                    const hit = hitTestResults[0];
-                    reticle.visible = true;
-                    reticle.matrix.fromArray(hit.getPose(referenceSpace).transform.matrix);
-                } else {
-                    reticle.visible = false;
-                }
-            }
+        // iOS Webkit対応 (webkitCompassHeadingがある場合はそちらを優先)
+        if (event.webkitCompassHeading) {
+            currentAlpha = event.webkitCompassHeading;
+        } else {
+            currentAlpha = event.alpha;
         }
-        renderer.render(scene, camera);
+        
+        currentBeta = event.beta; // スマホの縦の傾き
+
+        // 90度（直立）～0度（水平）～マイナス（上向き）への変換
+        // 一般的に beta=90 が直立。ターゲットを見る時は beta < 90 になるはず
+        let lookDownAngle = 90 - currentBeta; // 水平から下に何度向いているか
+
+        calculate(lookDownAngle, currentAlpha);
+    }
+
+    // 計算ロジック
+    function calculate(lookDownAngleDeg, currentAzimuth) {
+        const h = eyeHeight;
+        const R = PLOT_RADIUS;
+        
+        // 1. 斜面補正係数の計算
+        let effectiveSlopeDeg = 0;
+        
+        if (slopeAzimuth !== null) {
+            // 山側方位との差分 (-180 ～ 180度)
+            let diff = currentAzimuth - slopeAzimuth;
+            // 角度をラジアンに
+            let diffRad = diff * (Math.PI / 180);
+            // 現在向いている方向の勾配 = 最大勾配 * cos(方位差)
+            // 例: 山側(0度差)なら cos(0)=1 (最大勾配), 横(90度差)なら cos(90)=0 (平坦)
+            effectiveSlopeDeg = slopeAngleDeg * Math.cos(diffRad);
+        }
+
+        // 2. 判定基準となる「境界線の俯角」を計算
+        // 公式: tan(θ_limit) = h/R - tan(α_slope)
+        // ※ θ_limit: 境界となる視線角度（水平＝0、下＝正）
+        // ※ α_slope: 地面の勾配（上り＝正、下り＝負）
+        
+        const slopeRad = effectiveSlopeDeg * (Math.PI / 180);
+        const term = (h / R) - Math.tan(slopeRad);
+        const limitRad = Math.atan(term);
+        const limitDeg = limitRad * (180 / Math.PI); // これより下ならIN
+
+        // デバッグ表示
+        document.getElementById('debug-pitch').innerText = lookDownAngleDeg.toFixed(1);
+        document.getElementById('debug-heading').innerText = Math.round(currentAzimuth);
+        
+        // 3. 判定
+        const judgeElem = document.getElementById('judgement');
+        
+        // 視線角度が、境界角度より「下（大きい）」ならIN（近い）
+        // 視線角度が、境界角度より「上（小さい）」ならOUT（遠い）
+        
+        if (lookDownAngleDeg > limitDeg) {
+            judgeElem.style.display = 'block';
+            judgeElem.innerText = 'IN';
+            judgeElem.className = 'status-in';
+            // 十字線の色も変える
+            document.getElementById('crosshair').style.borderColor = '#00ff00';
+        } else {
+            judgeElem.style.display = 'block';
+            judgeElem.innerText = 'OUT';
+            judgeElem.className = 'status-out';
+             document.getElementById('crosshair').style.borderColor = '#ff0000';
+        }
+    }
+
+    // カウンター処理
+    function incrementCount() {
+        count++;
+        document.getElementById('count-val').innerText = count;
+    }
+    function resetCount() {
+        if(confirm("カウントを0に戻しますか？")) {
+            count = 0;
+            document.getElementById('count-val').innerText = count;
+        }
     }
 </script>
 </body>
