@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>林業ARプロット - 円形調査</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: sans-serif; }
+        /* UIオーバーレイ */
+        #overlay {
+            position: absolute; top: 10px; left: 10px; right: 10px;
+            color: white; background: rgba(0, 0, 0, 0.5); padding: 10px;
+            border-radius: 8px; pointer-events: auto; z-index: 100;
+            display: none; /* AR開始まで隠す */
+        }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input[type=range] { width: 100%; }
+        #status { font-size: 0.9em; margin-top: 5px; color: #aaa; }
+    </style>
+</head>
+<body>
+
+<div id="overlay">
+    <label>半径: <span id="radiusVal">5.6</span> m</label>
+    <input type="range" id="radiusInput" min="1.0" max="10.0" step="0.1" value="5.6">
+    <div id="status">地面を認識中...タップして円を配置</div>
+</div>
+
+<script type="module">
+    import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+    import { ARButton } from 'https://unpkg.com/three@0.160.0/examples/jsm/webxr/ARButton.js';
+
+    let container;
+    let camera, scene, renderer;
+    let controller;
+    let reticle; // 地面認識用のマーカー
+    let currentRing = null; // 現在表示中の円
+    let hitTestSource = null;
+    let hitTestSourceRequested = false;
+
+    let plotRadius = 5.6; // デフォルト半径
+
+    init();
+    animate();
+
+    function init() {
+        container = document.createElement('div');
+        document.body.appendChild(container);
+
+        scene = new THREE.Scene();
+
+        // カメラ設定
+        camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+
+        // 照明（リングを見やすくするため）
+        const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
+        scene.add(light);
+
+        // レンダラー設定
+        renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.xr.enabled = true; // WebXR有効化
+        container.appendChild(renderer.domElement);
+
+        // AR開始ボタンの追加
+        const arButton = ARButton.createButton(renderer, { requiredFeatures: ['hit-test'], optionalFeatures: ['dom-overlay'], domOverlay: { root: document.body } });
+        document.body.appendChild(arButton);
+
+        // ARセッション開始時のUI表示制御
+        arButton.addEventListener('click', () => {
+            setTimeout(() => { document.getElementById('overlay').style.display = 'block'; }, 1000);
+        });
+
+        // コントローラー（タップ操作）
+        controller = renderer.xr.getController(0);
+        controller.addEventListener('select', onSelect);
+        scene.add(controller);
+
+        // レチクル（照準）の作成
+        reticle = new THREE.Mesh(
+            new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2),
+            new THREE.MeshBasicMaterial()
+        );
+        reticle.matrixAutoUpdate = false;
+        reticle.visible = false;
+        scene.add(reticle);
+
+        // スライダーのイベント
+        document.getElementById('radiusInput').addEventListener('input', (e) => {
+            plotRadius = parseFloat(e.target.value);
+            document.getElementById('radiusVal').textContent = plotRadius.toFixed(1);
+            
+            // 既に円があればサイズ更新
+            if (currentRing) {
+                updateRingGeometry(currentRing, plotRadius);
+            }
+        });
+
+        window.addEventListener('resize', onWindowResize);
+    }
+
+    // タップ時の処理：リングを配置
+    function onSelect() {
+        if (reticle.visible) {
+            if (currentRing) {
+                scene.remove(currentRing); // 古い円を消す
+            }
+            createPlotRing(reticle.matrix);
+        }
+    }
+
+    // リングを作成する関数
+    function createPlotRing(matrix) {
+        // リングのジオメトリ（内径, 外径, 分割数）
+        // 線の太さを出すために内径と外径に差をつける
+        const thickness = 0.05; // 5cm幅のライン
+        const geometry = new THREE.RingGeometry(plotRadius - thickness, plotRadius, 64);
+        geometry.rotateX(-Math.PI / 2); // 床に寝かせる
+
+        const material = new THREE.MeshBasicMaterial({ 
+            color: 0x00ff00, // 緑色
+            side: THREE.DoubleSide,
+            transparent: true,
+            opacity: 0.8 
+        });
+
+        currentRing = new THREE.Mesh(geometry, material);
+        
+        // レチクルの位置・回転をコピー
+        currentRing.position.setFromMatrixPosition(matrix);
+        currentRing.quaternion.setFromRotationMatrix(matrix);
+
+        scene.add(currentRing);
+        document.getElementById('status').textContent = `半径${plotRadius}mの円を配置しました`;
+    }
+
+    // 半径変更時の更新
+    function updateRingGeometry(mesh, radius) {
+        const thickness = 0.05;
+        mesh.geometry.dispose(); // メモリ開放
+        mesh.geometry = new THREE.RingGeometry(radius - thickness, radius, 64);
+        mesh.geometry.rotateX(-Math.PI / 2);
+    }
+
+    function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function animate() {
+        renderer.setAnimationLoop(render);
+    }
+
+    function render(timestamp, frame) {
+        if (frame) {
+            const referenceSpace = renderer.xr.getReferenceSpace();
+            const session = renderer.xr.getSession();
+
+            if (hitTestSourceRequested === false) {
+                session.requestReferenceSpace('viewer').then(function (referenceSpace) {
+                    session.requestHitTestSource({ space: referenceSpace }).then(function (source) {
+                        hitTestSource = source;
+                    });
+                });
+                session.addEventListener('end', function () {
+                    hitTestSourceRequested = false;
+                    hitTestSource = null;
+                });
+                hitTestSourceRequested = true;
+            }
+
+            if (hitTestSource) {
+                const hitTestResults = frame.getHitTestResults(hitTestSource);
+
+                if (hitTestResults.length > 0) {
+                    const hit = hitTestResults[0];
+                    reticle.visible = true;
+                    reticle.matrix.fromArray(hit.getPose(referenceSpace).transform.matrix);
+                } else {
+                    reticle.visible = false;
+                }
+            }
+        }
+        renderer.render(scene, camera);
+    }
+</script>
+</body>
+</html>
