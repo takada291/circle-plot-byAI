@@ -1,4 +1,4 @@
-const CACHE_NAME = 'circle-plot-byar-v1';
+const CACHE_NAME = 'circle-plot-byar-v1.5.0';
 const urlsToCache = [
   './',
   './index.html',
@@ -41,4 +41,5 @@ self.addEventListener('fetch', event => {
         return fetch(event.request);
       })
   );
+
 });
