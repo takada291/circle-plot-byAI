@@ -24,7 +24,7 @@
             transform: translate(-50%, -50%);
             border: 2px solid rgba(255, 255, 255, 0.5);
             border-radius: 50%;
-            transition: border-color 0.1s; /* 高速化のため少し短く */
+            transition: border-color 0.2s;
             z-index: 5;
         }
         #crosshair::after {
@@ -41,7 +41,7 @@
             text-shadow: 0px 0px 10px rgba(0,0,0,0.8);
             display: none;
             z-index: 5;
-            pointer-events: none; /* タップ透過 */
+            pointer-events: none;
         }
         .status-in { color: #00ff00; }
         .status-out { color: #ff0000; }
@@ -122,7 +122,7 @@
 
     <video id="video" autoplay playsinline muted></video>
 
-    <div id="app-title">AR釣竿 v1.3</div>
+    <div id="app-title">AR釣竿 v1.4</div>
 
     <div id="ui-layer">
         <div id="crosshair"></div>
@@ -204,13 +204,10 @@
             if(s === 25) opt.selected = true;
             slopeSel.appendChild(opt);
         }
-        
-        // 初期設定読み込み
         updateSettings();
     };
 
-    // --- 変数 (最適化のためグローバルで保持) ---
-    // 設定値（Inputから読み込んだもの）
+    // --- グローバル変数 ---
     let settings = {
         radius: 5.6,
         eyeHeight: 1.6,
@@ -218,25 +215,30 @@
         isReverse: false
     };
 
-    // センサー値（リアルタイム）
     let sensor = {
         azimuth: 0,
         tilt: 0,
         active: false
     };
 
-    // セットされた山側方位
     let slopeAzimuth = null;
     let count = 0;
     
-    // --- メインループ (描画用) ---
-    function animate() {
-        requestAnimationFrame(animate); // 次のフレームを予約 (これが軽量化の鍵)
+    // アニメーション制御用
+    let lastTime = 0;
+    const UPDATE_INTERVAL = 100; // 100msごとに描画更新 (10fps)
 
-        if (!sensor.active) return;
+    // --- メインループ ---
+    function animate(timestamp) {
+        requestAnimationFrame(animate);
 
-        // 計算処理
-        // 1. 実効勾配の計算
+        // センサーが動いていない、または前回の更新から時間が経っていない場合はスキップ
+        // これが軽量化のキモです
+        if (!sensor.active || (timestamp - lastTime < UPDATE_INTERVAL)) return;
+        
+        lastTime = timestamp;
+
+        // --- 計算処理 ---
         let effectiveSlopeDeg = 0;
         
         if (slopeAzimuth !== null) {
@@ -249,19 +251,13 @@
         }
 
         const effSlopeRad = effectiveSlopeDeg * (Math.PI / 180);
-        
-        // 2. 境界角度の計算
         const groundRise = settings.radius * Math.tan(effSlopeRad);
         const targetY = groundRise - settings.eyeHeight;
         const limitRad = Math.atan(targetY / settings.radius);
         const limitDeg = limitRad * (180 / Math.PI);
-
-        // 3. 表示用数値
         const slopeDistance = Math.sqrt(Math.pow(settings.radius, 2) + Math.pow(groundRise, 2));
 
-        // --- DOM更新 (ここが重いので、RAF内で一括処理) ---
-        
-        // 方位表示 (設定パネルが開いている時だけ更新するとさらに軽くなるが、今回は常時更新)
+        // --- 画面更新 ---
         document.getElementById('live-azimuth').innerText = Math.round(sensor.azimuth) + "°";
 
         const dispSlope = document.getElementById('disp-slope');
@@ -281,7 +277,7 @@
 
         document.getElementById('disp-radius').innerText = slopeDistance.toFixed(2);
         
-        // 判定更新
+        // 判定
         const judgeElem = document.getElementById('judgement');
         const crosshair = document.getElementById('crosshair');
 
@@ -299,8 +295,6 @@
     }
 
     // --- イベントハンドラ ---
-
-    // 設定変更時に呼び出される（ループ内での重いDOM読み込みを防ぐ）
     function updateSettings() {
         const r = parseFloat(document.getElementById('plotRadiusInput').value);
         settings.radius = (r && r > 0) ? r : 5.6;
@@ -311,10 +305,8 @@
         document.getElementById('disp-base-radius').innerText = settings.radius;
     }
 
-    // センサーイベント（ここでは変数更新のみ行う）
     function handleOrientation(event) {
         sensor.active = true;
-
         if (event.webkitCompassHeading) {
             sensor.azimuth = event.webkitCompassHeading;
         } else if (event.alpha) {
@@ -330,17 +322,31 @@
         }
         slopeAzimuth = sensor.azimuth;
         document.getElementById('set-azimuth').innerText = Math.round(slopeAzimuth) + "°";
-        
-        alert("✅ 山側の方位をセットしました！");
-        toggleControls(); // 自動で閉じる
+        alert("✅ 山側の方位をセットしました！\nパネルを閉じて測定してください。");
+        toggleControls(); 
     }
 
     async function startCamera() {
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+            // カメラ設定：環境カメラ(背面)、HD画質程度に制限して負荷を下げる
+            const constraints = { 
+                video: { 
+                    facingMode: 'environment',
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 }
+                } 
+            };
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
             document.getElementById('video').srcObject = stream;
         } catch (err) {
-            console.error(err);
+            console.error("Camera Error:", err);
+            // エラー時は最低限の設定で再トライ
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+                document.getElementById('video').srcObject = stream;
+            } catch(e) {
+                alert("カメラの起動に失敗しました");
+            }
         }
     }
 
@@ -350,9 +356,9 @@
                 .then(state => {
                     if (state === 'granted') {
                         window.addEventListener('deviceorientation', handleOrientation);
-                        document.querySelector('.btn-start').style.background = "#28a745";
-                        document.querySelector('.btn-start').innerText = "センサー稼働中";
-                        // アニメーションループ開始
+                        const btn = document.querySelector('.btn-start');
+                        btn.style.background = "#28a745";
+                        btn.innerText = "センサー稼働中";
                         requestAnimationFrame(animate);
                     } else {
                         alert("センサー許可が必要です");
@@ -360,13 +366,11 @@
                 });
         } else {
             window.addEventListener('deviceorientation', handleOrientation);
-            // アニメーションループ開始
             requestAnimationFrame(animate);
         }
         startCamera();
     }
 
-    // UI操作系
     function toggleControls() {
         const panel = document.getElementById('controls');
         const icon = document.getElementById('toggle-icon');
