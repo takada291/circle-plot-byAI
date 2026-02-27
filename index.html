@@ -139,7 +139,7 @@
 
     <video id="video" autoplay playsinline muted></video>
 
-    <div id="app-title">AR釣竿 v1.5</div>
+    <div id="app-title">AR釣竿 v1.6</div>
 
     <div id="ui-layer">
         <div id="crosshair"></div>
@@ -335,11 +335,17 @@
 
     function handleOrientation(event) {
         sensor.active = true;
-        if (event.webkitCompassHeading) {
+        
+        // OSによる方位取得の分岐と補正
+        if (event.webkitCompassHeading !== undefined) {
+            // iOSの場合：0は北で、時計回りに数値が増加（コンパスと同じ）
             sensor.azimuth = event.webkitCompassHeading;
-        } else if (event.alpha) {
-            sensor.azimuth = event.alpha; 
+        } else if (event.alpha !== null) {
+            // Androidの場合：絶対方位(北基準)を取得するが、反時計回りに数値が増加する
+            // そのため、360から引き算をして「時計回り」に補正する
+            sensor.azimuth = (360 - event.alpha) % 360; 
         }
+        
         sensor.tilt = event.beta - 90;
     }
 
@@ -377,7 +383,8 @@
     }
 
     function requestPermissions() {
-        if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+        if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+            // iOSの場合
             DeviceOrientationEvent.requestPermission()
                 .then(state => {
                     if (state === 'granted') {
@@ -391,7 +398,18 @@
                     }
                 });
         } else {
-            window.addEventListener('deviceorientation', handleOrientation);
+            // Android等の場合：「絶対方位（北基準）」を取得するイベントを優先して登録する
+            if ('ondeviceorientationabsolute' in window) {
+                window.addEventListener('deviceorientationabsolute', handleOrientation);
+            } else {
+                window.addEventListener('deviceorientation', handleOrientation);
+            }
+            
+            // Androidでも稼働中の表示に切り替える
+            const btn = document.querySelector('.btn-start');
+            btn.style.background = "#28a745";
+            btn.innerText = "センサー稼働中";
+            
             requestAnimationFrame(animate);
         }
         startCamera();
